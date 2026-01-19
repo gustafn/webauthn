@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<message_catalog package_key="webauthn" locale="en_US" charset="ISO-8859-1">
+
+  <msg key="login_btn_label">Sign in with passkey</msg>
+  <msg key="login_btn_title">Sign in with a pre-registered passkey instead of a password</msg>
+  
+  <msg key="diagnose_btn_label">Passkey diagnostics</msg>
+  <msg key="diagnose_btn_title">If passkey sign-in does not work: run diagnostics and send the report!</msg>
+  
+  <msg key="passkey_delete_title">Delete this passkey</msg>
+  
+  <msg key="passkey_reg_first_label">Register a passkey</msg>
+  <msg key="passkey_reg_first_title">Register a new passkey on this device for passwordless sign-in</msg>
+
+  <msg key="passkey_reg_additional_label">Register another passkey</msg>
+  <msg key="passkey_reg_additional_title">Register an additional passkey on this device</msg>
+
+  <msg key="passkey_mgmt_heading">Passkeys</msg>
+  <msg key="passkey_mgmt_registered">Your registered passkeys:</msg>
+
+  <msg key="passkey_mgmt_text">When you register a passkey on this device, you can sign in without a password using the device&#39;s  built-in authentication (such as fingerprint, Face ID, or a security key, depending on the device).</msg>
+</message_catalog>
+  

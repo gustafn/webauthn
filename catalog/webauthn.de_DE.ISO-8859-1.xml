@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<message_catalog package_key="webauthn" locale="de_DE" charset="ISO-8859-1">
+
+  <msg key="login_btn_label">Mit Passkey anmelden</msg>
+  <msg key="login_btn_title">Mit einem zuvor registrierten Passkey statt mit einem Passwort anmelden</msg>
+  
+  <msg key="diagnose_btn_label">Passkey-Diagnose</msg>
+  <msg key="diagnose_btn_title">Falls die Passkey-Anmeldung nicht funktioniert: Diagnose ausführen und Bericht senden!</msg>
+  
+  <msg key="passkey_delete_title">Diesen Passkey löschen</msg>
+  
+  <msg key="passkey_reg_first_label">Passkey registrieren</msg>
+  <msg key="passkey_reg_first_title">Einen neuen Passkey auf diesem Gerät für die passwortlose Anmeldung registrieren</msg>
+
+  <msg key="passkey_reg_additional_label">Weiteren Passkey registrieren</msg>
+  <msg key="passkey_reg_additional_title">Einen zusätzlichen Passkey auf diesem Gerät registrieren</msg>
+
+  <msg key="passkey_mgmt_heading">Passkeys</msg>
+  <msg key="passkey_mgmt_registered">Ihre registrierten Passkeys:</msg>
+
+  <msg key="passkey_mgmt_text">
+    Wenn Sie auf diesem Gerät einen Passkey registrieren, können Sie sich ohne Passwort anmelden,
+    indem Sie die integrierte Authentifizierung des Geräts verwenden
+    (z.B. Fingerabdruck, Face ID oder einen Sicherheitsschlüssel, je nach Gerät).
+  </msg>
+</message_catalog>
