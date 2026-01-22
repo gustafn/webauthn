@@ -1,0 +1,211 @@
+<?xml version='1.0' ?>
+<!DOCTYPE book PUBLIC "-//OASIS//DTD DocBook XML V4.4//EN"
+               "http://www.oasis-open.org/docbook/xml/4.4/docbookx.dtd" [
+<!ENTITY % myvars SYSTEM "variables.ent">
+%myvars;
+]>
+
+<sect1 id="webauthn-design" xreflabel="OpenACS WebAuthn / Passkeys">
+  <title>OpenACS WebAuthn / Passkeys</title>
+
+  <para>
+    This package adds WebAuthn (passkey) authentication support to OpenACS
+    running on NaviServer.
+  </para>
+
+  <itemizedlist>
+    <listitem><para>Login flows for passkeys (passkey-first, identifier-first, and auto mode)</para></listitem>
+    <listitem><para>JSON endpoints for WebAuthn registration/authentication ceremonies</para></listitem>
+    <listitem><para>Optional diagnostics endpoint for troubleshooting browser/device capabilities</para></listitem>
+  </itemizedlist>
+
+  <sect2 id="webauthn-design-endpoints">
+    <title>Endpoints</title>
+
+    <itemizedlist>
+      <listitem>
+        <para>
+          <literal>GET /webauthn/auth/options</literal>:
+          Returns WebAuthn assertion options for <literal>navigator.credentials.get()</literal>.
+        </para>
+      </listitem>
+    </itemizedlist>
+
+    <para>
+      Additional endpoints are provided for registration/authentication flows as part of
+      the package’s API surface.
+    </para>
+  </sect2>
+
+  <sect2 id="webauthn-design-development-notes">
+    <title>Development Notes</title>
+
+    <itemizedlist>
+      <listitem>
+        <para>
+          JSON endpoints validate inputs using <literal>webauthn::json_contract</literal>
+          (similar in spirit to <literal>ad_page_contract</literal>, but returning JSON errors
+          instead of HTML complaints).
+        </para>
+      </listitem>
+      <listitem>
+        <para>
+          WebAuthn request options are per-request and must not be cached.
+        </para>
+      </listitem>
+    </itemizedlist>
+  </sect2>
+
+
+<sect2 id="webauthn-configuration">
+  <title>Configuration</title>
+
+  <para>
+    The WebAuthn relying party identifier (RP ID) can be configured via the
+    NaviServer configuration file. The RP ID must match the effective host
+    name used to access the site (for example, <literal>localhost</literal>
+    versus <literal>127.0.0.1</literal>), otherwise browsers will reject
+    WebAuthn operations.
+  </para>
+
+  <para>
+    To set the RP ID explicitly, add the following stanza to your configuration file:
+  </para>
+
+  <programlisting><![CDATA[
+ns_section ns/server/$server/acs/webauthn {
+    ns_param RpID "YOUR-RPID"
+}
+]]></programlisting>
+
+  <para>
+    If <literal>RpID</literal> is not specified, the package first tries to
+    use the configured server name (<literal>[ns_info server]</literal>).
+    This value is typically correct in Docker-based configurations and in
+    standard installations derived from the sample <literal>openacs-config.tcl</literal>.
+    When the server name is not appropriate for use as an RP ID, the package
+    falls back to <literal>localhost</literal>.
+  </para>
+</sect2>
+
+<sect3 id="webauthn-configuration-pitfalls">
+  <title>Common Pitfalls</title>
+
+  <para>
+    A frequent source of WebAuthn failures during development is a mismatch
+    between the configured RP ID and the host name used to access the site.
+    Browsers enforce strict origin and RP ID checks and will reject requests
+    that do not match.
+  </para>
+
+  <itemizedlist>
+    <listitem>
+      <para>
+        Accessing the site via <literal>https://127.0.0.1</literal> while the
+        RP ID is <literal>localhost</literal> (or vice versa). In this case,
+        browsers typically fail with a <literal>SecurityError</literal> such as
+        “The operation is insecure.”
+      </para>
+    </listitem>
+
+    <listitem>
+      <para>
+        Using an IP address as RP ID while accessing the site via a host name,
+        or changing the effective host name without updating the RP ID.
+      </para>
+    </listitem>
+  </itemizedlist>
+
+  <para>
+    For local development, it is recommended to consistently use
+    <literal>https://localhost</literal> and either rely on the default RP ID
+    resolution or explicitly configure <literal>RpID</literal> to
+    <literal>localhost</literal>.
+  </para>
+</sect3>
+
+  
+  <sect2 id="webauthn-design-requirements">
+    <title>Requirements</title>
+
+    <para>
+      This package requires recent versions of both NaviServer and OpenACS.
+    </para>
+
+    <sect3 id="webauthn-design-requirements-naviserver">
+      <title>NaviServer</title>
+
+      <para>
+        A recent NaviServer version with the following features enabled is required:
+      </para>
+
+      <itemizedlist>
+        <listitem>
+          <para>
+            <emphasis role="strong">CBOR support (RFC 8949)</emphasis>:
+            Used for decoding WebAuthn attestation objects and authenticator data.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            <emphasis role="strong">Extended cryptographic support for EC keys</emphasis>, including:
+          </para>
+          <itemizedlist>
+            <listitem><para>Importing and creating elliptic-curve keys from affine coordinates</para></listitem>
+            <listitem><para>COSE / WebAuthn-compatible key handling</para></listitem>
+            <listitem><para>ECDSA verification suitable for ES256 credentials</para></listitem>
+          </itemizedlist>
+        </listitem>
+
+        <listitem>
+          <para>
+            <emphasis role="strong">OpenSSL with modern EC support</emphasis>:
+            NaviServer must be built against a recent OpenSSL version providing contemporary
+            elliptic-curve primitives required by WebAuthn.
+          </para>
+        </listitem>
+      </itemizedlist>
+
+      <para>
+        In practice, this means a current NaviServer 5.x build with <literal>ns_cbor</literal>
+        and enhanced <literal>ns_crypto</literal> functionality enabled.
+      </para>
+    </sect3>
+
+    <sect3 id="webauthn-design-requirements-openacs">
+      <title>OpenACS</title>
+
+      <para>
+        <emphasis role="strong">OpenACS HEAD</emphasis>:
+        Use the newest available version from the HEAD branch. The recent version of
+        <literal>acs-subsite</literal> is needed for inclusion of the WebAuthn UI elements.
+        Otherwise, branch <literal>acs-5-10</literal> should be sufficient.
+      </para>
+
+      <para>
+        Older OpenACS releases are not supported, as this package relies on recent authentication
+        infrastructure, filter behavior, and JSON-based endpoint patterns.
+      </para>
+    </sect3>
+  </sect2>
+
+  <sect2 id="webauthn-design-license">
+    <title>License</title>
+
+    <para>
+      SPDX-License-Identifier: MPL-2.0
+    </para>
+
+    <para>
+      Copyright (c) 2026 Gustaf Neumann
+    </para>
+
+    <para>
+      This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+      If a copy of the MPL was not distributed with this file, You can obtain one at
+      <ulink url="https://mozilla.org/MPL/2.0/">https://mozilla.org/MPL/2.0/</ulink>.
+    </para>
+  </sect2>
+
+</sect1>
