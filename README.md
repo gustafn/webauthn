@@ -47,8 +47,10 @@ In practice, this means a **current NaviServer 5.x build** with
 
 ### OpenACS
 
-- **OpenACS 5.10.x (oacs-5-10 branch)**  
-  Use the newest available version from the `oacs-5-10` branch.
+- **OpenACS HEAD**  
+  Use the newest available version from the `HEAD` branch.
+  The recent version of `acs-subsite` is needed for the inclusing of
+  the webauthn UI elements. Otherwise, branch `acs-5-10` should be sufficient.
 
 Older OpenACS releases are not supported, as this package relies on
 recent authentication infrastructure, filter behavior, and JSON-based
