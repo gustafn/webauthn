@@ -25,22 +25,22 @@ registration (attestation) and authentication (assertion) ceremonies.
 
 ### Registration (passkey creation)
 
-* `GET /webauthn/reg/options`
+* `GET /webauthn/reg/options`  
   Returns PublicKeyCredentialCreationOptions for
   `navigator.credentials.create()`.
 
-* `POST /webauthn/reg/verify`
+* `POST /webauthn/reg/verify`  
   Verifies the attestation response and stores the credential.
 
 ---
 
 ### Authentication (passkey login)
 
-* `GET /webauthn/auth/options`
+* `GET /webauthn/auth/options`  
   Returns PublicKeyCredentialRequestOptions for
   `navigator.credentials.get()`.
 
-* `POST /webauthn/auth/verify`
+* `POST /webauthn/auth/verify`  
   Verifies the assertion response and authenticates the user.
 
 ---
