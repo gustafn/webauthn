@@ -482,11 +482,8 @@ ns_register_proc GET /webauthn/diagnostics {
 
 
 #----------------------------------------------------------------------
-# GET /webauthn/auth/verify
+# POST /webauthn/diagnostics
 #----------------------------------------------------------------------
-#
-# POST: receive client-side report and log it
-#
 ns_register_proc POST /webauthn/diagnostics {
 
     set auth_obj [webauthn::json_contract {
