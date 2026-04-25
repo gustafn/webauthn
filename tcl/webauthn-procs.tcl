@@ -61,9 +61,12 @@ namespace eval webauthn {
             # @param error   Short, stable error code (machine-readable).
             # @param detail  Human-readable error message suitable for display/logging.
             #
-            ns_return $status application/json [subst {{"error":"$error","detail":"$detail"}}]
-        }        
-        
+            ns_return $status application/json \
+                [ns_json value -type object [list \
+                                                 error string $error \
+                                                 detail string $detail]]
+        }
+
         :public method logout {} {
             #
             # Compatibility function with other external_registry objects
@@ -125,7 +128,7 @@ namespace eval webauthn {
             #
             # @param nbytes Number of random bytes to generate before encoding
             #               (default: 32).
-            #            
+            #
             return [ns_crypto::randombytes -encoding base64url $nbytes]
         }
 
@@ -165,7 +168,7 @@ namespace eval webauthn {
             if {$clientData_json eq ""} {
                 throw {validation missing-clientdata} "invalid clientDataJSON"
             }
-            set cd [util::json2dict $clientData_json]
+            set cd [ns_json parse $clientData_json]
 
             if {![dict exists $cd type]} {
                 throw {validation bad-clientdata-json} "clientDataJSON missing 'type'"
@@ -208,7 +211,7 @@ namespace eval webauthn {
             #            (challenge, origin, return_url, user_id, ...).
             # @param req Parsed client response dict containing "response" fields,
             #            including clientDataJSON and attestationObject.
-            
+
             set return_url        [dict get $st return_url]
             set user_id           [dict get $st user_id]
 
@@ -229,7 +232,7 @@ namespace eval webauthn {
             set attObj_bin [ns_base64urldecode -binary -- $attObj_b64u]
 
             try {
-                set ao [ns_cbor decode -binary -encoding binary $attObj_bin]
+                set ao [ns_cbor parse -binary -encoding binary $attObj_bin]
             } on error {e} {
                 throw {validation attobj-cbor} "bad attestationObject CBOR: $e"
             }
@@ -270,33 +273,73 @@ namespace eval webauthn {
             set coseKey [string range $authData 55+$credIdLen end]
 
             try {
-                set cose [ns_cbor decode -binary -encoding binary $coseKey]
+                set cose [ns_cbor parse -binary -encoding binary $coseKey]
             } on error {e} {
                 throw {validation cose-cbor} "bad COSE_Key CBOR: $e"
             }
+            ns_log notice "DEBUG reg attestation_verify: COSE key parsed: $cose"
 
-            # Basic COSE sanity (ES256 / P-256)
-            if {![dict exists $cose 3] || [dict get $cose 3] != -7} {
-                throw {validation alg-unsupported} "unsupported COSE alg (expected -7 ES256)"
+            if {![dict exists $cose 1] || ![dict exists $cose 3]} {
+                throw {validation key-invalid} "COSE key missing kty/alg"
             }
-            if {![dict exists $cose 1] || [dict get $cose 1] != 2} {
-                throw {validation keytype-unsupported} "unsupported COSE kty (expected 2 EC2)"
-            }
-            if {![dict exists $cose -1] || [dict get $cose -1] != 1} {
-                throw {validation curve-unsupported} "unsupported COSE crv (expected 1 P-256)"
+            set kty [dict get $cose 1]
+            set alg [dict get $cose 3]
+
+            switch -exact -- "${kty}/${alg}" {
+                "1/-8" {
+                    # OKP / EdDSA
+                    if {![dict exists $cose -1] || ![dict exists $cose -2]} {
+                        throw {validation key-invalid} "OKP COSE key missing curve/public key"
+                    }
+
+                    switch -- [dict get $cose -1] {
+                        6 - 7 {
+                            # Ed25519 / Ed448
+                        }
+                        4 - 5 {
+                            throw {validation curve-unsupported} \
+                                "OKP curve is for key agreement, not signatures"
+                        }
+                        default {
+                            throw {validation curve-unsupported} \
+                                "unsupported OKP curve \"[dict get $cose -1]\""
+                        }
+                    }
+                }
+                "2/-7" {
+                    # EC2 / ES256
+                    if {![dict exists $cose -1] || [dict get $cose -1] != 1} {
+                        throw {validation curve-unsupported} "unsupported COSE crv (expected 1 P-256)"
+                    }
+                }
+                "3/-257" {
+                    # RSA / RS256
+                    if {![dict exists $cose -1] || ![dict exists $cose -2]} {
+                        throw {validation key-invalid} "RSA COSE key missing modulus/exponent"
+                    }
+                }
+                default {
+                    throw {validation alg-unsupported} \
+                        "unsupported COSE key type / algorithm ($kty/$alg)"
+                }
             }
 
             # Build DB values
             set credential_id [ns_base64urlencode -binary -- $credId]
+
             set public_key [dict create \
                                 format cose \
                                 fmt $fmt \
                                 aaguid_b64u [ns_base64urlencode -binary -- $aaguid] \
+                                kty [dict get $cose 1] \
                                 alg [dict get $cose 3] \
-                                crv [dict get $cose -1] \
                                 cose_b64u [ns_base64urlencode -binary -- $coseKey] \
                                 sign_count $signCount \
                                 rp_id ${:rp_id}]
+
+            if {[dict exists $cose -1]} {
+                dict set public_key crv [dict get $cose -1]
+            }
 
             return [dict create \
                         user_id $user_id \
@@ -320,7 +363,7 @@ namespace eval webauthn {
             # @param return_url Local URL to redirect to after successful login
             #                   (default: "/").
             #
-            
+
             set state     [::xo::oauth::nonce]
             set challenge [:new_challenge 32]
 
@@ -345,6 +388,247 @@ namespace eval webauthn {
                        ]
         }
 
+        :method cose_public_key_pem {-cose} {
+            #
+            # Convert a COSE_Key into a PEM-encoded public key.
+            #
+            # Supports the WebAuthn-relevant COSE key types:
+            #
+            #  - EC2 (kty=2): Elliptic Curve keys (e.g., ES256 / P-256)
+            #  - RSA (kty=3): RSA keys (e.g., RS256)
+            #  - OKP (kty=1): Octet Key Pair keys, including:
+            #        * Ed25519 / Ed448 (signature)
+            #        * X25519 / X448   (key agreement)
+            #
+            # Note: This method performs key *conversion only*. It does not enforce
+            # algorithm or usage constraints. Callers (e.g., assertion verification)
+            # must ensure that the selected key type and curve are appropriate for
+            # the intended operation (e.g., signature vs. key agreement).
+            #
+            # @param cose Parsed COSE_Key dict.
+            # @return PEM string of public key
+            #
+
+            if {![dict exists $cose 1]} {
+                throw {validation key-invalid} "COSE key missing kty"
+            }
+
+            set kty [dict get $cose 1]
+
+            switch -- $kty {
+                1 {
+                    #
+                    # OKP
+                    #
+                    if {![dict exists $cose -1] || ![dict exists $cose -2]} {
+                        throw {validation key-invalid} "OKP COSE key missing crv/x"
+                    }
+
+                    set crv [dict get $cose -1]
+                    set crvMap {
+                        6 Ed25519
+                        7 Ed448
+                        4 X25519
+                        5 X448
+                    }
+
+                    if {![dict exists $crvMap $crv]} {
+                        throw {validation curve-unsupported} \
+                            "unsupported COSE OKP curve \"$crv\""
+                    }
+
+                    set name [dict get $crvMap $crv]
+                    set x [dict get $cose -2]
+
+                    return [ns_crypto::key import \
+                                -name OKP \
+                                -params [dict create crv $name x $x]]
+                }
+                2 {
+                    #
+                    # EC2
+                    #
+                    if {![dict exists $cose -1]} {
+                        throw {validation key-invalid} "EC COSE key missing curve"
+                    }
+                    if {![dict exists $cose -2] || ![dict exists $cose -3]} {
+                        throw {validation key-invalid} "EC COSE key missing x/y coordinates"
+                    }
+
+                    set crv [dict get $cose -1]
+                    set curveMap {
+                        1 prime256v1
+                        2 secp384r1
+                        3 secp521r1
+                        8 secp256k1
+                    }
+                    if {![dict exists $curveMap $crv]} {
+                        throw {validation curve-unsupported} \
+                            "unsupported COSE EC curve \"$crv\""
+                    }
+
+                    set group [dict get $curveMap $crv]
+                    set x [dict get $cose -2]
+                    set y [dict get $cose -3]
+
+                    return [ns_crypto::key import \
+                                -name EC \
+                                -params [dict create group $group x $x y $y]]
+                }
+
+                3 {
+                    #
+                    # RSA
+                    #
+                    if {![dict exists $cose -1] || ![dict exists $cose -2]} {
+                        throw {validation key-invalid} \
+                            "RSA COSE key missing modulus/exponent"
+                    }
+
+                    set n [dict get $cose -1]
+                    set e [dict get $cose -2]
+
+                    return [ns_crypto::key import \
+                                -name RSA \
+                                -params [dict create n $n e $e]]
+                }
+
+                default {
+                    throw {validation keytype-unsupported} \
+                        "unsupported COSE kty \"$kty\""
+                }
+            }
+        }
+
+        :method verify_es256_assertion {-cose -sig -signedData} {
+            #
+            # Verify a WebAuthn assertion signature for an ES256 credential.
+            #
+            # Expects an EC2 / P-256 COSE key and verifies the signature
+            # over signedData using ECDSA with SHA-256.
+            #
+            # @param cose       Parsed COSE_Key dict.
+            # @param sig        Signature returned by the authenticator.
+            # @param signedData Binary signed data (authenticatorData || hash(clientDataJSON)).
+            #
+
+            if {![dict exists $cose 1] || [dict get $cose 1] != 2} {
+                throw {validation keytype-unsupported} "unsupported COSE kty (expected 2 EC2)"
+            }
+            if {![dict exists $cose 3] || [dict get $cose 3] != -7} {
+                throw {validation alg-unsupported} "unsupported COSE alg (expected -7 ES256)"
+            }
+            if {![dict exists $cose -1] || [dict get $cose -1] != 1} {
+                throw {validation curve-unsupported} "unsupported COSE crv (expected 1 P-256)"
+            }
+
+            if {[string length $sig] == 64} {
+                throw {validation signature-format} "unexpected raw 64-byte signature; expected DER"
+            }
+
+            set pubpem [:cose_public_key_pem -cose $cose]
+
+            set ok [ns_crypto::md string \
+                        -digest sha256 \
+                        -binary \
+                        -encoding binary \
+                        -verify $pubpem \
+                        -signature $sig \
+                        -- $signedData]
+
+            if {!$ok} {
+                throw {validation signature-invalid} "signature verification failed"
+            }
+        }
+
+        :method verify_rs256_assertion {-cose -sig -signedData} {
+            #
+            # Verify a WebAuthn assertion signature for an RS256 credential.
+            #
+            # The expected COSE key type is RSA (kty=3) with alg=-257
+            # (RS256), carrying modulus and exponent parameters.
+            #
+            # @param cose       Parsed COSE_Key dict.
+            # @param sig        Signature returned by the authenticator.
+            # @param signedData Binary signed data (authenticatorData || hash(clientDataJSON)).
+            #
+
+            if {![dict exists $cose 1] || [dict get $cose 1] != 3} {
+                throw {validation keytype-unsupported} "unsupported COSE kty (expected 3 RSA)"
+            }
+            if {![dict exists $cose 3] || [dict get $cose 3] != -257} {
+                throw {validation alg-unsupported} "unsupported COSE alg (expected -257 RS256)"
+            }
+
+            set pubpem [:cose_public_key_pem -cose $cose]
+
+            set ok [ns_crypto::md string \
+                        -digest sha256 \
+                        -binary \
+                        -encoding binary \
+                        -verify $pubpem \
+                        -signature $sig \
+                        -- $signedData]
+
+            if {!$ok} {
+                throw {validation signature-invalid} "signature verification failed"
+            }
+        }
+
+        :public method verify_okp_signature_assertion {-cose -sig -signedData} {
+            #
+            # Verify a WebAuthn assertion signature for an OKP signature key.
+            #
+            # Expects an OKP COSE key (kty=1, alg=-8) using a signature-capable
+            # OKP curve such as Ed25519 or Ed448. X25519 and X448 are valid
+            # OKP agreement curves, but cannot verify WebAuthn assertions.
+            #
+            # @param cose       Parsed COSE_Key dict.
+            # @param sig        Signature returned by the authenticator.
+            # @param signedData Binary signed data.
+            #
+
+            if {![dict exists $cose 1] || [dict get $cose 1] != 1} {
+                throw {validation keytype-unsupported} \
+                    "unsupported COSE kty (expected 1 OKP)"
+            }
+            if {![dict exists $cose 3] || [dict get $cose 3] != -8} {
+                throw {validation alg-unsupported} \
+                    "unsupported COSE alg (expected -8 EdDSA)"
+            }
+            if {![dict exists $cose -1] || ![dict exists $cose -2]} {
+                throw {validation key-invalid} \
+                    "OKP COSE key missing curve/public key"
+            }
+
+            switch -- [dict get $cose -1] {
+                6 - 7 {
+                    # Ed25519 / Ed448
+                }
+                4 - 5 {
+                    throw {validation curve-unsupported} \
+                        "OKP curve is for key agreement, not signatures"
+                }
+                default {
+                    throw {validation curve-unsupported} \
+                        "unsupported OKP curve \"[dict get $cose -1]\""
+                }
+            }
+
+            set pubpem [:cose_public_key_pem -cose $cose]
+
+            set ok [ns_crypto::signature verify \
+                        -binary \
+                        -pem $pubpem \
+                        -signature $sig \
+                        -- $signedData]
+
+            if {!$ok} {
+                throw {validation signature-invalid} \
+                    "signature verification failed"
+            }
+        }
+
         :public method "auth assertion_verify" {-st -req} {
             #
             # Verify a WebAuthn authentication response (assertion) against stored state.
@@ -364,7 +648,7 @@ namespace eval webauthn {
             # @param req Parsed client response dict containing the assertion fields,
             #            including id, clientDataJSON, authenticatorData, and signature.
             #
-            
+
             set return_url        [dict get $st return_url]
             set expectedRpId      [dict get $st rpId]
 
@@ -441,35 +725,43 @@ namespace eval webauthn {
                 throw {validation key-invalid} "stored public key missing cose_b64u"
             }
             set coseKey_bin [ns_base64urldecode -binary -- [dict get $public_key cose_b64u]]
-            set cose [ns_cbor decode -binary -encoding binary $coseKey_bin]
+            set cose [ns_cbor parse -binary -encoding binary $coseKey_bin]
 
-            # Check alg / key type (ES256 expected)
-            if {![dict exists $cose 3] || [dict get $cose 3] != -7} {
-                throw {validation alg-unsupported} "unsupported COSE alg (expected -7 ES256)"
-            }
-            if {![dict exists $cose 1] || [dict get $cose 1] != 2} {
-                throw {validation keytype-unsupported} "unsupported COSE kty (expected 2 EC2)"
-            }
-            if {![dict exists $cose -1] || [dict get $cose -1] != 1} {
-                throw {validation curve-unsupported} "unsupported COSE crv (expected 1 P-256)"
+            ns_log notice "assertion_verify: COSE key parsed: $cose"
+
+            if {![dict exists $cose 1] || ![dict exists $cose 3]} {
+                throw {validation key-invalid} "COSE key missing kty/alg"
             }
 
-            set x [dict get $cose -2]
-            set y [dict get $cose -3]
-            if {[string length $x] != 32 || [string length $y] != 32} {
-                throw {validation key-invalid} "unexpected EC coordinate length"
-            }
-            if {[string length $sig] == 64} {
-                throw {validation signature-format} "unexpected raw 64-byte signature; expected DER"
+            set kty [dict get $cose 1]
+            set alg [dict get $cose 3]
+
+            switch -exact -- "${kty}/${alg}" {
+                "1/-8" {
+                    :verify_okp_signature_assertion \
+                        -cose $cose \
+                        -sig $sig \
+                        -signedData $signedData
+                }
+                "2/-7" {
+                    :verify_es256_assertion \
+                        -cose $cose \
+                        -sig $sig \
+                        -signedData $signedData
+                }
+                "3/-257" {
+                    :verify_rs256_assertion \
+                        -cose $cose \
+                        -sig $sig \
+                        -signedData $signedData
+                }
+                default {
+                    throw {validation alg-unsupported} \
+                        "unsupported COSE key type / algorithm ($kty/$alg)"
+                }
             }
 
-            set pubpem [ns_crypto::eckey fromcoords -curve prime256v1 -x $x -y $y -binary -format pem]
-            set ok [ns_crypto::md string -digest sha256 -binary -encoding binary \
-                        -verify $pubpem -signature $sig -- $signedData]
-            ns_log notice "DEBUG SIGNATURE OK? $ok"
-            if {!$ok} {
-                throw {validation signature-invalid} "signature verification failed"
-            }
+
             ns_log notice DEBUG: update credential_id  $credential_id old_sign_count $old_sign_count new_sign_count $new_sign_count
 
             db_dml update_last_used {
@@ -488,12 +780,12 @@ namespace eval webauthn {
                 where credential_id = :credential_id
             } -default 0]
             return $user_id
-        }        
+        }
     }
 
 
     ad_proc -public json_contract {docstring query_specs} {
-        
+
         Helper for JSON endpoints with page-contract-like parameter validation.
 
         This procedure validates and normalizes request parameters according to
@@ -508,14 +800,14 @@ namespace eval webauthn {
         'ad_complaints_get_list', and aborts the script via 'ad_script_abort'.
 
         @param docstring   Human-readable endpoint documentation (currently unused
-                       by this helper; included to mirror 'ad_page_contract'
-                       call style and for future diagnostics/logging).
+                                                                  by this helper; included to mirror 'ad_page_contract'
+                                                                  call style and for future diagnostics/logging).
         @param query_specs List of parameter specifications, like in
-                       'ad_page_contract'
+        'ad_page_contract'
 
         @return The configured WebAuthn auth object (currently '::webauthn::passkey')
-        
-    } {        
+
+    } {
         set auth_obj ::webauthn::passkey
         if {![nsf::is object $auth_obj]} {
             ns_return 500 application/json {{"error":"passkey auth object not configured"}}
@@ -523,22 +815,39 @@ namespace eval webauthn {
             return
         }
         if {[llength $query_specs] > 0} {
-            set provided [ns_getform]
+            #ns_log notice "DEBUG: specs <[string trim $query_specs]>"
+
+            # "ns_getform" triggers auto-parsing, which sets also the
+            # cached JSON value
+            set formData [ns_getform]
+
+            #ns_log notice "DEBUG: have JSON body [info exists ::_ns_json_body]"
+            set provided [expr {[info exists ::_ns_json_body]
+                                ? [ns_parsequery [ns_conn query]]
+                                : $formData}]
+            #ns_log notice "DEBUG: query <[ns_conn query]>"
+            #ns_log notice "DEBUG: provided [ns_set format $provided]"
+
             foreach p $query_specs {
+                #ns_log notice "DEBUG: processing query spec <$p>"
                 unset -nocomplain default
                 if {[llength $p] == 2} {
                     lassign $p spec default
                 } else {
                     lassign $p spec
                 }
+                #ns_log notice "DEBUG: processing query spec <$p> info exists default [info exists default]"
+
                 lassign [split $spec :] name filters
+                #ns_log notice "DEBUG: ns_set find $provided $name -> [ns_set find $provided $name]"
+
                 if {[ns_set find $provided $name] != -1} {
                     set value [ns_set get $provided $name]
                     foreach filter [split $filters ,] {
                         set r 1
                         if {$filter eq "trim"} {
                             set value [string trim $value]
-                        } elseif {$filter eq "notnull"} {                        
+                        } elseif {$filter eq "notnull"} {
                         } elseif {[regexp {^(.+)[\(](.+)[\)]} $filter . filter_name filter_args]} {
                             set r [ad_page_contract_filter_invoke $filter_name $name value [list [split $filter_args |]]]
                         } else {
@@ -567,7 +876,7 @@ namespace eval webauthn {
     }
 
 
-    
+
     ad_proc -private validRpIdP {rpid} {
 
         Validate the provided rpid (Relying Party ID)
@@ -595,42 +904,6 @@ namespace eval webauthn {
         return 1
     }
 
-
-    ad_proc -private JQ {s} {
-
-        Perform quoting for JavaScript literals.
-
-        @return JSON-escaped string content (WITHOUT surrounding quotes).
-    } {
-        set s [string map [list \
-                               "\\" "\\\\" \
-                               "\"" "\\\"" \
-                               "\b" "\\b" \
-                               "\f" "\\f" \
-                               "\n" "\\n" \
-                               "\r" "\\r" \
-                               "\t" "\\t" \
-                              ] $s]
-
-        if {[regexp {[[:cntrl:]]} $s]} {
-            # Escape remaining control chars 0x00..0x1F
-            set out ""
-            set len [string length $s]
-            for {set i 0} {$i < $len} {incr i} {
-                set ch [string index $s $i]
-                scan $ch %c code
-                if {$code < 0x20} {
-                    append out [format "\\u%04X" $code]
-                } else {
-                    append out $ch
-                }
-            }
-            set s $out
-        }
-        return $s
-    }
-
-    
 }
 
 ::xo::library source_dependent

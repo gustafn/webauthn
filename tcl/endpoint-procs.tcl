@@ -61,7 +61,7 @@ ns_register_proc GET /webauthn/reg/options {
     #
     # Escape user-controlled strings
     #
-    set j_username [webauthn::JQ $username]
+    set j_username [ns_json value -type string $username]
 
     #
     # excludeCredentials JSON array items
@@ -75,7 +75,8 @@ ns_register_proc GET /webauthn/reg/options {
         } {
             # credential_id is base64url (still escape defensively)
             #nsf::is wordchar $credential_id
-            lappend exclude_json_items [subst {{"type":"public-key","id":"$credential_id"}}]
+            lappend exclude_json_items \
+                [subst {{"type":"public-key","id":[ns_json value -type string $credential_id]}}]
         }
     }
     set exclude_json "\[[join $exclude_json_items ,]\]"
@@ -87,9 +88,13 @@ ns_register_proc GET /webauthn/reg/options {
         | "state":"$state",
         | "publicKey":{
             |    "rp":{"id":"$rpId","name":"$rpId"},
-            |    "user":{"id":"$user_id","name":"$j_username","displayName":"$j_username"},
+            |    "user":{"id":"$user_id","name":$j_username,"displayName":$j_username},
             |    "challenge":"$challenge",
-            |    "pubKeyCredParams":[{"type":"public-key","alg":-7}],
+            |    "pubKeyCredParams":[
+            |       {"type":"public-key","alg":-7},
+            |       {"type":"public-key","alg":-257},
+            |       {"type":"public-key","alg":-8}
+            |    ],
             |    "timeout":60000,
             |    "attestation":"none",
             |    "authenticatorSelection":{"residentKey":"preferred","userVerification":"preferred"},
@@ -97,6 +102,9 @@ ns_register_proc GET /webauthn/reg/options {
             |  }
         | }
     }]]
+
+    #|    "pubKeyCredParams":[{"type":"public-key","alg":-7},{"type":"public-key","alg":-257}],
+
     ns_log notice DEBUG reg/options JSON=$json
     ns_log notice DEBUG stored-dict=[dict create \
                                                 challenge  $challenge \
@@ -138,8 +146,8 @@ ns_register_proc POST /webauthn/reg/verify {
         return [$auth_obj return_err "expired-registration" "no pending registration (expired?)"]
     }
 
-    set body [ns_conn content]
-    if {[catch { set req [util::json2dict $body] } err]} {
+    set body [ns_getjson]
+    if {[catch { set req [ns_json parse $body] } err]} {
         return [$auth_obj return_err "invalid-json" "$err"]
     }
 
@@ -199,7 +207,8 @@ ns_register_proc POST /webauthn/reg/verify {
         }
 
         [$auth_obj store] unset $key
-        ns_return 200 application/json [subst -nocommands {{"ok":true,"return_url":"$return_url"}}]
+        ns_return 200 application/json \
+            [subst {{"ok":true,"return_url":[ns_json value -type string $return_url]}}]
 
     } trap validation {errorMsg dict} {
         set errorCode [lindex [dict get $dict -errorcode] 1]
@@ -346,7 +355,7 @@ ns_register_proc GET /webauthn/auth/options {
             and rp_id   = :rpId
         } {
             lappend allow_credentials \
-                [subst -nocommands {{"type":"public-key","id":"$credential_id"}}]
+                [subst {{"type":"public-key","id":[ns_json value -type string $credential_id]}}]
         }
         if {[llength $allow_credentials] == 0} {
             return [$auth_obj return_err -status 404 "no-passkey" "No passkey registered for this account."]
@@ -403,16 +412,16 @@ ns_register_proc POST /webauthn/auth/verify {
     #
     # Process body of the POST request
     #
-    set body [ns_getcontent -as_file false]
+    set body [ns_getjson]
     if {$body eq ""} {
-        return [$auth_obj return_err "empty request body" ""]
+        return [$auth_obj return_err "empty-body" "Empty request body."]
     }
 
     try {
-        set req [util::json2dict $body]
+        set req [ns_json parse $body]
     } on error {errorMsg} {
         ns_log notice "JSON parse error: $errorMsg; body='$body'"
-        return [$auth_obj return_err "invalid json" $errorMsg]
+        return [$auth_obj return_err "invalid-json" $errorMsg]
     }
 
     #
@@ -439,7 +448,8 @@ ns_register_proc POST /webauthn/auth/verify {
     [$auth_obj store] unset $key
 
 
-    ns_return 200 application/json [subst {{"ok":true, "return_url":"$return_url"}}]
+    ns_return 200 application/json \
+        [subst {{"ok":true, "return_url":[ns_json value -type string $return_url]}}]
 }
 
 #----------------------------------------------------------------------

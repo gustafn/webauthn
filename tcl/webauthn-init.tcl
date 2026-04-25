@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
-if {[info commands ::ns_cbor] eq ""} {
-    ns_log warning "webauthn: package is enabled, but NaviServer needs to be upgraded to include required crypto support."
+if {[info commands ::ns_json] eq ""} {
+    ns_log warning "webauthn: package is enabled, but NaviServer needs to be upgraded to include required JSON and crypto support."
 } else {
     set rpid [parameter::get_from_package_key \
                   -package_key webauthn \
@@ -32,5 +32,4 @@ if {[info commands ::ns_cbor] eq ""} {
     ::webauthn::WebAuthn create webauthn::passkey \
         -rp_id $rpid \
         -debug
-    
 }
